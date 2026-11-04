@@ -18,7 +18,9 @@ stages, run in the order given:
   nro          pz41/pz41.nro from the game files: jar, reflection config, aarch64 native image (needs memory), link
   sd           the SD card folder (PZ_SD_OUT): switch/pz41.nro, pz41/ with args, x86 libraries, game natives, game
                data in FAT32-sized parts, the SwitchTreatment mod; no symlinks
-  all          every stage below, in order
+  all          env-check devkitpro fetch-game deps nro sd, in order
+  clean        delete what the build made, devkitPro included (asks first; --force doesn't), keeping the game
+               files, the SD folder and the Steam login
 
 options:
   --depot DIR       game files: DIR/game is the Linux depot 108603, DIR/betterfps the BetterFPS item  [PZ_DEPOT]
@@ -276,7 +278,8 @@ stage_fetch_game() {
       exit 3
     fi
   elif [ "$QR" = 0 ] && [ -z "$user" ]; then
-    read -r -p "Steam username (leave empty to log in with a QR code in the Steam app): " user < /dev/tty
+    read -r -p "Steam username (leave empty to log in with a QR code in the Steam app): " user < /dev/tty \
+      || die "fetch-game: no terminal to ask on; pass --steam-user NAME or --qr"
   fi
   if [ "$QR" = 1 ] || [ -z "$user" ]; then login=(-qr); else login=(-username "$user"); fi
   login+=(-remember-password)
@@ -372,6 +375,35 @@ stage_sd() {
   cp -r "$PZROOT/pz41/share/mods/SwitchTreatment" "$o/pz41/zomboid/mods/"
   [ -z "$(find "$o" -type l)" ] || die "sd: $o has symlinks, which a FAT32 card can't hold"
   echo "SD folder: $o ($(du -sh "$o" | cut -f1)); copy what's inside it to the root of the SD card"
+}
+
+# --- clean: everything pz-build made, except the game files, the SD folder and the Steam login ----------------------
+CLEAN_PATHS=(.pz-build pz41/jar pz41/pz41.jar pz41/build-a64 pz41/natives-out pz41/ni-a64.log pz41/pz41.nro pz41/game
+             pz41/mods/betterfps pz41/out/e2e-sd pz-switch/deps pz-switch/xfer pz-switch/horizon/app/build41
+             pz-switch/horizon/app/pz41.elf pz-switch/horizon/app/pz41.nacp pz-switch/horizon/box64/inc/linux
+             pz-switch/horizon/box64/inc/asm-generic)
+stage_clean() {
+  local p d=${PZ_DKP_ROOT%/} slashes
+  slashes=${d//[!\/]/}
+  # only a devkitPro root this stage would have made: at least three levels deep, holding opt/devkitpro
+  if [ "${#slashes}" -lt 3 ] || [ "$d" = "${HOME%/}" ] || { [ -e "$d" ] && [ ! -d "$d/opt/devkitpro" ]; }; then
+    die "clean: refusing to delete PZ_DKP_ROOT=$PZ_DKP_ROOT (not a devkitPro root)"
+  fi
+  echo "removes: in $PZROOT: ${CLEAN_PATHS[*]} and the generated box64 asm header links"
+  echo "         devkitPro: $PZ_DKP_ROOT"
+  echo "keeps:   the game files ($PZ_DEPOT), the SD folder ($PZ_SD_OUT), DepotDownloader's remembered Steam login"
+  echo "         (~/.local/share/IsolatedStorage) and the Nix store (nix-collect-garbage frees what nothing uses)"
+  if [ "$FORCE" = 0 ]; then
+    [ "$NONINTERACTIVE" = 0 ] || die "clean: needs --force with --non-interactive"
+    read -r -p "remove them? [y/N] " p < /dev/tty || p=
+    case $p in y | Y) ;; *) echo "nothing removed"; return 0 ;; esac
+  fi
+  for p in "${CLEAN_PATHS[@]}"; do rm -rf "${PZROOT:?}/$p"; done
+  while read -r p; do
+    [ -z "$p" ] || rm -f "$PZROOT/pz-switch/horizon/box64/inc/asm/$p"
+  done < "$PZROOT/pz-switch/horizon/box64/asm-headers.txt"
+  rm -rf "$PZ_DKP_ROOT"
+  echo "removed"
 }
 
 ALL_STAGES=(env-check devkitpro fetch-game deps nro sd)
