@@ -1,6 +1,7 @@
 // GLFW 3.4 (LWJGL's flavour) on libnx + Mesa EGL, resolved by the Java side through lxh_dlsym().
 // One window = the default NWindow; desktop GL 4.3 compatibility context (what the game's GLSL 110-430 mix needs).
-// Input: controller -> GLFW gamepad/joystick 0, touchscreen -> mouse, USB keyboard -> keys/chars.
+// Input: controller -> GLFW gamepad/joystick 0, touchscreen -> mouse, USB mouse -> mouse, USB keyboard -> keys/chars
+// (USB devices in the dock or through a USB-C adapter, reported the way desktop GLFW does).
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,6 +50,7 @@ static int glfwInit(void) {
     if (pk) { fclose(pk); padkbm = 1; }
     hidInitializeTouchScreen();
     hidInitializeKeyboard();
+    hidInitializeMouse();
     inited = 1;
     lx_logf("glfw: init\n");
     return 1;
@@ -235,6 +237,8 @@ static unsigned char gp_hat[NPADS][1];   // the D-pad as joystick hat 0 too, lik
 static double mouse_x, mouse_y;
 static int mouse_btn = -1;          // touch: button held (0 = one finger, 1 = two fingers = right click), -1 none
 static int pad_buttons[3];          // mouse buttons from the controller (pad->kbm mode)
+static unsigned char usb_buttons[8];   // USB mouse buttons, GLFW numbering
+static int kb_mods;                 // GLFW_MOD_* bits from the USB keyboard, for key and mouse button events
 static int cursor_mode = GLFW_CURSOR_NORMAL;
 static int padkbm;                  // controller as keyboard + mouse (sdmc:/<app>/padkbm), for games without pad support
 static unsigned char keys[512];       // what the game sees: USB keyboard OR controller
@@ -336,25 +340,42 @@ static int hid_to_glfw(int u) {
     if (u >= 0x1e && u <= 0x26) return 49 + (u - 0x1e);           // 1-9
     if (u == 0x27) return 48;                                     // 0
     if (u >= 0x3a && u <= 0x45) return 290 + (u - 0x3a);          // F1-F12
+    if (u >= 0x68 && u <= 0x73) return 302 + (u - 0x68);          // F13-F24
+    if (u >= 0x59 && u <= 0x61) return 321 + (u - 0x59);          // keypad 1-9
     switch (u) {
     case 0x28: return 257; case 0x29: return 256; case 0x2a: return 259; case 0x2b: return 258; case 0x2c: return 32;
     case 0x2d: return 45; case 0x2e: return 61; case 0x2f: return 91; case 0x30: return 93; case 0x31: return 92;
+    case 0x32: return 92;  // ISO #: backslash, as desktop GLFW reports it
     case 0x33: return 59; case 0x34: return 39; case 0x35: return 96; case 0x36: return 44; case 0x37: return 46;
     case 0x38: return 47; case 0x39: return 280; case 0x49: return 260; case 0x4a: return 268; case 0x4b: return 266;
     case 0x4c: return 261; case 0x4d: return 269; case 0x4e: return 267; case 0x4f: return 262; case 0x50: return 263;
     case 0x51: return 264; case 0x52: return 265; case 0xe0: return 341; case 0xe1: return 340; case 0xe2: return 342;
     case 0xe4: return 345; case 0xe5: return 344; case 0xe6: return 346;
+    case 0xe3: return 343; case 0xe7: return 347;                                       // Super
+    case 0x46: return 283; case 0x47: return 281; case 0x48: return 284;                // PrintScreen ScrollLock Pause
+    case 0x53: return 282; case 0x65: return 348; case 0x64: return 162;                // NumLock Menu ISO < (WORLD_2)
+    case 0x54: return 331; case 0x55: return 332; case 0x56: return 333; case 0x57: return 334;   // keypad / * - +
+    case 0x58: return 335; case 0x62: return 320; case 0x63: return 330; case 0x67: return 336;   // keypad Enter 0 . =
     }
     return -1;
 }
-static int glfw_to_char(int k, int shift) {
-    if (k >= 65 && k <= 90) return shift ? k : k + 32;
+// The character a key types (US layout, which the HID usages are named after); 0 for none. For the console's own
+// keyboard layout, the system keyboard (Minus + Plus) takes the USB keyboard too.
+static int glfw_to_char(int k, int shift, int caps, int numlock) {
+    if (k >= 65 && k <= 90) return shift != caps ? k : k + 32;
     if (k >= 48 && k <= 57) return shift ? ")!@#$%^&*("[k - 48] : k;
+    if (k >= 320 && k <= 330) return numlock ? (k == 330 ? '.' : '0' + (k - 320)) : 0;   // keypad digits and point
+    if (k >= 331 && k <= 334) return "/*-+"[k - 331];
     if (k == 32) return 32;
     static const char *lo = "-=[]\\;'`,./", *hi = "_+{}|:\"~<>?";
     static const int ks[] = { 45, 61, 91, 93, 92, 59, 39, 96, 44, 46, 47 };
     for (int i = 0; i < 11; i++) if (ks[i] == k) return shift ? hi[i] : lo[i];
     return 0;
+}
+static void kb_type(int k) {   // the text USB key k types, with the keyboard's current modifiers
+    if (kb_mods & 0x6) return;   // Ctrl or Alt held: a shortcut, not text
+    int c = glfw_to_char(k, kb_mods & 0x1, (kb_mods >> 4) & 1, (kb_mods >> 5) & 1);
+    if (c && cb.chr) cb.chr(&win, c);
 }
 
 // pad->kbm: the controller drives keys and the mouse, for games that only know keyboard and mouse (Minecraft 1.12).
@@ -460,27 +481,88 @@ static void glfwPollEvents(void) {
             if (want >= 0 && cb.button) cb.button(&win, want, 1, 0);
         }
     }
-    // keyboard
+    // USB keyboard, like desktop GLFW: press/release with modifier bits, the last key held repeats (GLFW_REPEAT after
+    // 500 ms, every 33 ms), and text for keys that type (none while Ctrl or Alt is held)
     HidKeyboardState ks;
     if (hidGetKeyboardStates(&ks, 1)) {
-        int shift = (ks.modifiers & HidKeyboardModifier_Shift) != 0;
+        u64 m = ks.modifiers;
+        kb_mods = (m & HidKeyboardModifier_Shift ? 0x1 : 0) | (m & HidKeyboardModifier_Control ? 0x2 : 0) |
+                  (m & (HidKeyboardModifier_LeftAlt | HidKeyboardModifier_RightAlt) ? 0x4 : 0) |
+                  (m & HidKeyboardModifier_Gui ? 0x8 : 0) | (m & HidKeyboardModifier_CapsLock ? 0x10 : 0) |
+                  (m & HidKeyboardModifier_NumLock ? 0x20 : 0);
+        static short kb_scan[512];
+        static int rep_key = -1; static u64 rep_at;
+        u64 now = armGetSystemTick();
+        unsigned char held[512] = { 0 };   // per GLFW key: two usages can share one (backslash)
         for (int u = 0; u < 256; u++) {
             int k = hid_to_glfw(u);
-            if (k < 0) continue;
-            int down = (ks.keys[u / 64] >> (u % 64)) & 1;
-            if (down == kb_keys[k]) continue;
-            kb_keys[k] = down;
-            key_update(k, u, shift);
-            int c = glfw_to_char(k, shift);
-            if (down && c && cb.chr) cb.chr(&win, c);
+            if (k >= 0 && ((ks.keys[u / 64] >> (u % 64)) & 1)) { held[k] = 1; kb_scan[k] = u; }
         }
+        for (int k = 0; k < 512; k++) {
+            if (held[k] == kb_keys[k]) continue;
+            kb_keys[k] = held[k];
+            key_update(k, kb_scan[k], kb_mods);
+            if (held[k]) {
+                kb_type(k);
+                int lock_or_mod = (k >= 280 && k <= 282) || (k >= 340 && k <= 347);
+                if (!lock_or_mod) { rep_key = k; rep_at = now + armNsToTicks(500000000ull); }
+            } else if (k == rep_key) rep_key = -1;
+        }
+        if (rep_key >= 0 && now >= rep_at) {
+            if (cb.key) cb.key(&win, rep_key, kb_scan[rep_key], 2, kb_mods);   // GLFW_REPEAT
+            kb_type(rep_key);
+            rep_at = now + armNsToTicks(33000000ull);
+        }
+    }
+    // USB mouse, like a desktop mouse: motion moves the pointer touch moves too (kept on screen unless the game captures
+    // it), buttons 1-5 with modifier bits, the wheel scrolls. HID keeps the last 17 samples; every one not seen yet
+    // counts, so motion, a quick click or a wheel notch between two frames isn't lost.
+    HidMouseState ms[17];
+    size_t nms = hidGetMouseStates(ms, 17);   // newest first
+    static u64 ms_seen; static u32 ms_held; static int ms_started;
+    if (nms && (ms[0].attributes & HidMouseAttribute_IsConnected)) {
+        if (!ms_started) { ms_started = 1; ms_seen = ms[0].sampling_number; ms_held = ms[0].buttons; }
+        static const int glfw_button[5] = { 0, 1, 2, 4, 3 };   // left right middle forward back -> GLFW 1 2 3 5 4
+        double dx = 0, dy = 0;
+        for (int i = (int)nms - 1; i >= 0; i--) {
+            if (ms[i].sampling_number <= ms_seen) continue;
+            ms_seen = ms[i].sampling_number;
+            dx += ms[i].delta_x; dy += ms[i].delta_y;
+            int wheel = ms[i].wheel_delta_y ? ms[i].wheel_delta_y : ms[i].wheel_delta_x;
+            if (wheel && cb.scroll) cb.scroll(&win, 0, wheel > 0 ? 1 : -1);
+            for (int b = 0; b < 5; b++) {
+                int down = (ms[i].buttons >> b) & 1;
+                if (down == (int)((ms_held >> b) & 1)) continue;
+                usb_buttons[glfw_button[b]] = down;
+                if (cb.button) cb.button(&win, glfw_button[b], down, kb_mods);
+            }
+            ms_held = ms[i].buttons;
+        }
+        if (dx || dy) {
+            mouse_x += dx * W / 1280.0; mouse_y += dy * H / 720.0;
+            if (cursor_mode != GLFW_CURSOR_DISABLED) {
+                if (mouse_x < 0) mouse_x = 0;
+                if (mouse_x > W - 1) mouse_x = W - 1;
+                if (mouse_y < 0) mouse_y = 0;
+                if (mouse_y > H - 1) mouse_y = H - 1;
+            }
+            if (cb.cursor) cb.cursor(&win, mouse_x, mouse_y);
+        }
+    } else if (ms_started) {   // unplugged: let go of whatever it held
+        ms_started = 0; ms_held = 0;
+        for (int b = 0; b < 8; b++)
+            if (usb_buttons[b]) { usb_buttons[b] = 0; if (cb.button) cb.button(&win, b, 0, kb_mods); }
     }
 }
 static void glfwWaitEvents(void) { glfwPollEvents(); }
 static void glfwWaitEventsTimeout(double t) { (void)t; glfwPollEvents(); }
 static void glfwPostEmptyEvent(void) {}
 static int glfwGetKey(Win *w, int k) { (void)w; return k >= 0 && k < 512 ? keys[k] : 0; }
-static int glfwGetMouseButton(Win *w, int b) { (void)w; return b >= 0 && b < 3 ? b == mouse_btn || pad_buttons[b] : 0; }
+static int glfwGetMouseButton(Win *w, int b) {
+    (void)w;
+    if (b < 0 || b >= 8) return 0;
+    return usb_buttons[b] || (b < 3 && (b == mouse_btn || pad_buttons[b]));
+}
 static void glfwGetCursorPos(Win *w, double *x, double *y) { (void)w; if (x) *x = mouse_x; if (y) *y = mouse_y; }
 static void glfwSetCursorPos(Win *w, double x, double y) { (void)w; mouse_x = x; mouse_y = y; }
 static int glfwGetInputMode(Win *w, int m) { (void)w; return m == GLFW_CURSOR ? cursor_mode : 0; }

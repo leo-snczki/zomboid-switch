@@ -133,6 +133,12 @@ python3 pz41/share/setup-sd.py pz41/game/projectzomboid out
 and copy `out/pz41` onto the card. Start the NRO in full-RAM mode (hold R while starting a game). The first load
 into the world takes 3-4 minutes. Controller and touch screen both work.
 
+A USB mouse and keyboard work too, in the dock or through a USB-C adapter. The game gets them as on PC: the pointer,
+five mouse buttons, the wheel, keys with Shift/Ctrl/Alt and key repeat. As on PC, the game decides whether a player
+uses the controller or the mouse and keyboard. Typed text follows the US layout. For
+your own layout (for example Portuguese), open the system keyboard with Minus + Plus: it takes the USB keyboard in the
+layout set in the console's settings.
+
 Recommended `options.ini` settings: `texture2x=false`, `maxVehicleTextureSize=1`, `simpleClothingTextures=2`,
 `simpleWeaponTextures=true`.
 
