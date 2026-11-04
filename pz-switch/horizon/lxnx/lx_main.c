@@ -242,9 +242,10 @@ int main(int argc, char **argv) {
             lx_logf("wrote low-memory options.ini\n");
         }
     }
-    // The game draws its own mouse pointer only with "Lock cursor to window" on (Core.EndFrameUI); otherwise it leaves
-    // that to the system's pointer, which the Switch doesn't have. On every start, so a USB mouse is always visible.
-    options_force(LX_ROOT "/zomboid/options.ini", "lockCursorToWindow", "true");
+    // "Lock cursor to window" makes the game draw its own pointer wherever the mouse is said to be, the touchscreen
+    // included. Kept off (the game's default), the pointer is the GLFW cursor, which lx_glfw.c draws for a USB mouse
+    // only, as a desktop's system would. On every start: an earlier build turned it on.
+    options_force(LX_ROOT "/zomboid/options.ini", "lockCursorToWindow", "false");
 
     // arguments: one per line from args.txt (argv[0] included)
     static char *args[256];

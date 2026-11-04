@@ -121,6 +121,7 @@ static void glfwMakeContextCurrent(Win *w) {
 }
 static Win *glfwGetCurrentContext(void) { return current; }
 static int tracing, ntrace;   // defined with the GL tracer below
+static void draw_pointer(void);   // with the input, below
 static void glfwSwapBuffers(Win *w) {
     static unsigned swaps;
     extern volatile unsigned long lx_frames, lx_frame_max_us; lx_frames++;
@@ -131,7 +132,7 @@ static void glfwSwapBuffers(Win *w) {
     if (tracing > 0 && (swaps < 5 || swaps % 300 == 0)) lx_logf("glfw: swap %u (%d GL functions traced)\n", swaps, ntrace);
     swaps++;
     extern volatile u64 lx_last_swap; if (swaps > 30) lx_last_swap = armGetSystemTick();   // armed once frames flow
-    if (dpy && w) eglSwapBuffers(dpy, w->surf);
+    if (dpy && w) { draw_pointer(); eglSwapBuffers(dpy, w->surf); }
 }
 static void glfwSwapInterval(int i) { if (dpy) eglSwapInterval(dpy, i); }
 // GL tracing (debug; on when sdmc:/pz/gltrace exists): every GL function handed out goes through a stub in lx_gltrace.s
@@ -271,27 +272,117 @@ static void read_switch_input(void) {
 // player 2's (and player 1 already has the mouse). Without the mod, assume a single player.
 static int mouse_takes_pad(void) { return p1_pad == -2 || p1_pad == 0; }
 
-// The game draws its pointer wherever it's told the mouse is (lockCursorToWindow keeps it on), so the pointer is
-// hidden by telling it the bottom-right corner, where the game draws it just off screen. Shown while player 1 is on
-// mouse and keyboard, while a finger is on the touchscreen (and a moment after, so its click lands), and in pad->kbm.
-static int touch_grace;
+// the game hears about every pointer move, from the mouse, the touchscreen or pad->kbm
 static double told_x = -1, told_y = -1;
-static int pointer_shown(void) {   // pad_handed_over: until the game (or the mod) catches up
-    return padkbm || touch_grace > 0 || pad_handed_over || p1_pad == -1;
-}
 static void pointer_update(void) {
-    int shown = pointer_shown();
-    double x = shown ? mouse_x : W, y = shown ? mouse_y : H;
-    if (x == told_x && y == told_y) return;
-    told_x = x; told_y = y;
-    if (cb.cursor) cb.cursor(&win, x, y);
+    if (mouse_x == told_x && mouse_y == told_y) return;
+    told_x = mouse_x; told_y = mouse_y;
+    if (cb.cursor) cb.cursor(&win, mouse_x, mouse_y);
+}
+
+// The pointer is drawn (see draw_pointer) only for a USB mouse that's plugged in and has player 1: the game says so
+// through SwitchInput, or the mouse just took controller 1 over (pad_handed_over, also without the mod). Never for the
+// touchscreen. pad->kbm (controller as mouse) always shows it.
+static int mouse_plugged;
+static int pointer_wanted(void) { return padkbm || (mouse_plugged && (pad_handed_over || p1_pad == -1)); }
+
+// --- the mouse pointer ---
+// On a desktop the system draws the GLFW cursor; the Switch has none, so it's drawn here over each finished frame: the
+// image the game gave glfwCreateCursor (Project Zomboid's cursor_white.png), at the pointer, when the game shows it
+// (GLFW_CURSOR_NORMAL) and pointer_wanted(). glDrawPixels with blending: no textures, shaders or matrices, and the GL
+// state goes back as it was.
+typedef struct { int width, height; const unsigned char *pixels; } GLFWimage;
+typedef struct { int w, h, xhot, yhot; unsigned char *rgba; } Cursor;   // rgba bottom row first, as glDrawPixels wants
+static Cursor *cur_cursor;
+static Cursor *glfwCreateCursor(const GLFWimage *img, int xhot, int yhot) {
+    Cursor *c = calloc(1, sizeof *c);
+    if (!c || !img || !img->pixels || img->width <= 0 || img->height <= 0 || img->width > 256 || img->height > 256) return c;
+    c->rgba = malloc((size_t)img->width * img->height * 4);
+    if (!c->rgba) return c;
+    c->w = img->width; c->h = img->height; c->xhot = xhot; c->yhot = yhot;
+    lx_logf("glfw: cursor %dx%d, hotspot %d,%d\n", c->w, c->h, xhot, yhot);
+    for (int y = 0; y < c->h; y++)   // GLFW images go top row first
+        memcpy(c->rgba + (size_t)(c->h - 1 - y) * c->w * 4, img->pixels + (size_t)y * c->w * 4, (size_t)c->w * 4);
+    return c;
+}
+static Cursor *glfwCreateStandardCursor(int shape) { (void)shape; return calloc(1, sizeof(Cursor)); }   // no image: not drawn
+static void glfwDestroyCursor(Cursor *c) {
+    if (!c) return;
+    if (c == cur_cursor) cur_cursor = NULL;
+    free(c->rgba); free(c);
+}
+static void glfwSetCursor(Win *w, Cursor *c) { (void)w; cur_cursor = c; }
+
+static struct {
+    void (*GetIntegerv)(unsigned, int *);
+    void (*UseProgram)(unsigned);
+    void (*BindFramebuffer)(unsigned, unsigned);
+    void (*BindBuffer)(unsigned, unsigned);
+    void (*PushAttrib)(unsigned);
+    void (*PopAttrib)(void);
+    void (*PushClientAttrib)(unsigned);
+    void (*PopClientAttrib)(void);
+    void (*Disable)(unsigned);
+    void (*Enable)(unsigned);
+    void (*BlendFunc)(unsigned, unsigned);
+    void (*BlendEquation)(unsigned);
+    void (*ColorMask)(unsigned char, unsigned char, unsigned char, unsigned char);
+    void (*DrawBuffer)(unsigned);
+    void (*PixelStorei)(unsigned, int);
+    void (*PixelZoom)(float, float);
+    void (*WindowPos2i)(int, int);
+    void (*DrawPixels)(int, int, unsigned, unsigned, const void *);
+} gl;
+static int gl_pointer_ok(void) {
+    static int ok = -1;
+    if (ok >= 0) return ok;
+    static const char *names[] = { "glGetIntegerv", "glUseProgram", "glBindFramebuffer", "glBindBuffer", "glPushAttrib",
+        "glPopAttrib", "glPushClientAttrib", "glPopClientAttrib", "glDisable", "glEnable", "glBlendFunc", "glBlendEquation",
+        "glColorMask", "glDrawBuffer", "glPixelStorei", "glPixelZoom", "glWindowPos2i", "glDrawPixels" };
+    void **slot = (void **)&gl;
+    ok = 1;
+    for (unsigned i = 0; i < sizeof names / sizeof names[0]; i++)
+        if (!(slot[i] = (void *)eglGetProcAddress(names[i]))) { lx_logf("glfw: no %s, pointer not drawn\n", names[i]); ok = 0; }
+    return ok;
+}
+static void draw_pointer(void) {
+    Cursor *c = cur_cursor;
+    int shown = c && c->rgba && cursor_mode == GLFW_CURSOR_NORMAL && pointer_wanted();
+    static int was_shown = -1;
+    if (shown != was_shown) { was_shown = shown; lx_logf("glfw: pointer %s\n", shown ? "shown" : "hidden"); }
+    if (!shown || !gl_pointer_ok()) return;
+    int prog = 0, fbo = 0, unpack = 0;
+    gl.GetIntegerv(0x8B8D, &prog);     // GL_CURRENT_PROGRAM
+    gl.GetIntegerv(0x8CA6, &fbo);      // GL_DRAW_FRAMEBUFFER_BINDING
+    gl.GetIntegerv(0x88EF, &unpack);   // GL_PIXEL_UNPACK_BUFFER_BINDING
+    gl.PushAttrib(0xFFFFFFFF);         // GL_ALL_ATTRIB_BITS: enables, blending, draw buffer, raster position...
+    gl.PushClientAttrib(0xFFFFFFFF);   // GL_CLIENT_ALL_ATTRIB_BITS: pixel store
+    gl.UseProgram(0);
+    gl.BindFramebuffer(0x8CA9, 0);     // GL_DRAW_FRAMEBUFFER: the window
+    gl.BindBuffer(0x88EC, 0);          // GL_PIXEL_UNPACK_BUFFER: pixels from client memory
+    gl.DrawBuffer(0x0405);             // GL_BACK
+    static const unsigned off[] = { 0x0B71, 0x0B90, 0x0C11, 0x0BC0, 0x0B60, 0x0DE0, 0x0DE1, 0x806F, 0x8513, 0x0BF2 };
+    for (unsigned i = 0; i < sizeof off / sizeof off[0]; i++) gl.Disable(off[i]);   // depth stencil scissor alpha fog,
+    gl.Enable(0x0BE2);                                                               // textures 1D 2D 3D cube, logic op
+    gl.BlendFunc(0x0302, 0x0303);      // GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA
+    gl.BlendEquation(0x8006);          // GL_FUNC_ADD
+    gl.ColorMask(1, 1, 1, 1);
+    gl.PixelStorei(0x0CF5, 1);         // GL_UNPACK_ALIGNMENT
+    gl.PixelStorei(0x0CF2, 0); gl.PixelStorei(0x0CF3, 0); gl.PixelStorei(0x0CF4, 0);   // row length, skip rows/pixels
+    gl.PixelZoom(1, 1);
+    gl.WindowPos2i((int)mouse_x - c->xhot, H - ((int)mouse_y - c->yhot) - c->h);   // window y goes up
+    gl.DrawPixels(c->w, c->h, 0x1908, 0x1401, c->rgba);   // GL_RGBA, GL_UNSIGNED_BYTE
+    gl.PopClientAttrib();
+    gl.PopAttrib();
+    gl.BindBuffer(0x88EC, unpack);
+    gl.BindFramebuffer(0x8CA9, fbo);
+    gl.UseProgram(prog);
 }
 
 static void pad_hand_over(void) {
     if (pad_handed_over || !mouse_takes_pad()) return;
     pad_handed_over = 1;
     lx_logf("controller 1 hands over to the USB mouse/keyboard\n");
-    pointer_update();   // shown before the click that did it reaches the game
 }
 static int padkbm;                  // controller as keyboard + mouse (sdmc:/<app>/padkbm), for games without pad support
 static unsigned char keys[512];       // what the game sees: USB keyboard OR controller
@@ -529,8 +620,6 @@ static void glfwPollEvents(void) {
             else if (armTicksToNs(armGetSystemTick() - t0) >= 1000000000ull) held = 1;
         }
         int want = ts.count >= 2 || held ? 1 : multi ? -1 : ts.count - 1;
-        if (ts.count) touch_grace = 8;   // the pointer stays where the finger was until its delayed click is through
-        else if (touch_grace > 0) touch_grace--;
         if (ts.count && !multi && !held) {
             mouse_x = ts.touches[0].x * W / 1280.0; mouse_y = ts.touches[0].y * H / 720.0;
         }
@@ -584,6 +673,7 @@ static void glfwPollEvents(void) {
     // counts, so motion, a quick click or a wheel notch between two frames isn't lost.
     HidMouseState ms[17];
     size_t nms = hidGetMouseStates(ms, 17);   // newest first
+    mouse_plugged = nms && (ms[0].attributes & HidMouseAttribute_IsConnected);
     static u64 ms_seen; static u32 ms_held; static int ms_started;
     if (nms && (ms[0].attributes & HidMouseAttribute_IsConnected)) {
         if (!ms_started) { ms_started = 1; ms_seen = ms[0].sampling_number; ms_held = ms[0].buttons; }
@@ -633,18 +723,8 @@ static int glfwGetMouseButton(Win *w, int b) {
     if (b < 0 || b >= 8) return 0;
     return usb_buttons[b] || (b < 3 && (b == mouse_btn || pad_buttons[b]));
 }
-// the game sees the pointer where it's told it is (parked off screen while hidden, see pointer_update)
-static void glfwGetCursorPos(Win *w, double *x, double *y) {
-    (void)w;
-    int shown = pointer_shown();
-    if (x) *x = shown ? mouse_x : W;
-    if (y) *y = shown ? mouse_y : H;
-}
-static void glfwSetCursorPos(Win *w, double x, double y) {   // the game keeping the pointer in the window
-    (void)w;
-    told_x = x; told_y = y;
-    if (pointer_shown()) { mouse_x = x; mouse_y = y; }   // a hidden pointer keeps its real place for later
-}
+static void glfwGetCursorPos(Win *w, double *x, double *y) { (void)w; if (x) *x = mouse_x; if (y) *y = mouse_y; }
+static void glfwSetCursorPos(Win *w, double x, double y) { (void)w; mouse_x = told_x = x; mouse_y = told_y = y; }
 static int glfwGetInputMode(Win *w, int m) { (void)w; return m == GLFW_CURSOR ? cursor_mode : 0; }
 static void glfwSetInputMode(Win *w, int m, int v) { (void)w; if (m == GLFW_CURSOR) cursor_mode = v; }
 static const char *glfwGetKeyName(int k, int s) { (void)k; (void)s; return NULL; }
@@ -672,8 +752,6 @@ static void *glfwSetJoystickCallback(void *f) { void *o = (void *)cb.joystick; c
 
 // everything else: accepted and ignored
 static long glfw_noop(void) { return 0; }
-static int dummy_cursor;
-static void *glfwCreateCursor(void) { return &dummy_cursor; }   // no pointer on the Switch; the game only needs a handle
 
 #define F(n) { #n, (GLFWfn)n }
 #define N(n) { #n, (GLFWfn)glfw_noop }
@@ -702,7 +780,7 @@ static const struct { const char *name; GLFWfn fn; } glfw_table[] = {
     N(glfwMaximizeWindow), N(glfwShowWindow), N(glfwHideWindow), N(glfwFocusWindow), N(glfwRequestWindowAttention),
     N(glfwSetWindowMonitor), N(glfwSetWindowAttrib), N(glfwSetWindowPosCallback), N(glfwSetWindowRefreshCallback),
     N(glfwSetWindowIconifyCallback), N(glfwSetWindowMaximizeCallback), N(glfwSetWindowContentScaleCallback),
-    F(glfwSetInputMode), F(glfwCreateCursor), { "glfwCreateStandardCursor", (GLFWfn)glfwCreateCursor }, N(glfwDestroyCursor), N(glfwSetCursor),
+    F(glfwSetInputMode), F(glfwCreateCursor), F(glfwCreateStandardCursor), F(glfwDestroyCursor), F(glfwSetCursor),
     N(glfwGetPreeditCursorRectangle), N(glfwSetPreeditCursorRectangle), N(glfwResetPreeditText), N(glfwGetPreeditCandidate),
     N(glfwSetCharModsCallback), N(glfwSetPreeditCallback), N(glfwSetIMEStatusCallback), N(glfwSetPreeditCandidateCallback),
     N(glfwSetCursorEnterCallback), N(glfwSetDropCallback), N(glfwSetJoystickUserPointer), N(glfwGetJoystickUserPointer),
