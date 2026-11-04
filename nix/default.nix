@@ -27,7 +27,7 @@ let
 
   pz-build = pkgs.writeShellApplication {
     name = "pz-build";
-    runtimeInputs = with pkgs; [ coreutils findutils gnugrep gnused gawk util-linux pacman gnupg ];
+    runtimeInputs = with pkgs; [ coreutils findutils gnugrep gnused gawk util-linux pacman gnupg depotdownloader ];
     runtimeEnv = {
       PZ_FHS = "${env}/bin/pz-switch-env";
       PZ_PACMAN_CONF = "${./devkitpro-pacman.conf}";

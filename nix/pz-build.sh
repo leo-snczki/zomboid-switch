@@ -12,6 +12,8 @@ stages, run in the order given:
   env-check    toolchain versions, devkitPro status, memory check (with .wslconfig advice on WSL)
   devkitpro    install devkitPro's Switch packages into PZ_DKP_ROOT, signatures checked, no root
                (default ~/.local/share/pz-switch/dkp-root; --force to update)
+  fetch-game   download Project Zomboid 41.78 for Linux (depot 108603) and BetterFPS with your Steam login; skipped
+               when PZ_DEPOT already has them (BetterFPS is also taken from a local Steam workshop folder)
   deps         musl, zlib, libffi, the LWJGL/OpenGL/stb/sqlite natives, box64 and the x86 libraries (setup-deps.sh)
   nro          pz41/pz41.nro from the game files: jar, reflection config, aarch64 native image (needs memory), link
   all          every stage below, in order
@@ -22,6 +24,9 @@ options:
   --force           redo stages even when their outputs are up to date
   --skip-memcheck   build the native image even below the memory threshold
   --offline         never log into Steam; fail when game files are missing
+  --steam-user NAME Steam username for fetch-game (asked for when not given)                [PZ_STEAM_USER]
+  --qr              log into Steam with a QR code in the Steam app instead of a password
+  --non-interactive never prompt: fetch-game needs a login DepotDownloader remembers (exit 3 if there is none)
 
 Defaults: on WSL <Windows user profile>\pz4-depot and \pz4-sd, otherwise ~/pz4-depot and ~/pz4-sd.
 Settings can also be kept in pz-build.conf at the repo root (shell syntax, e.g. PZ_DEPOT=/mnt/d/pz4-depot).
@@ -245,6 +250,46 @@ ensure_betterfps() {   # BetterFPS in PZ_DEPOT/betterfps, and its IsoChunkMap in
   install -D -m 644 "$PZ_DEPOT/betterfps/$BFPS_CLASS" "$PZROOT/pz41/mods/betterfps/classes/zombie/iso/IsoChunkMap.class"
 }
 
+# --- fetch-game: the user's own copy, through DepotDownloader -------------------------------------------------------
+# The password and Steam Guard code are typed into DepotDownloader's own prompts (or replaced by a QR login with the
+# Steam app); pz-build only ever passes the username. -remember-password keeps a login token in DepotDownloader's
+# per-user storage (outside the repo), so later runs need no interaction.
+DD_GAME=(-app 108600 -depot 108603 -manifest 8887512142279836582 -beta legacy41)
+steam_remembered() {   # does DepotDownloader hold a login token for this user?
+  local f
+  while IFS= read -r -d '' f; do grep -qaF -- "$1" "$f" && return 0; done \
+    < <(find "${XDG_DATA_HOME:-$HOME/.local/share}/IsolatedStorage" -name account.config -print0 2>/dev/null)
+  return 1
+}
+
+stage_fetch_game() {
+  local user=${PZ_STEAM_USER:-} login=()
+  if [ "$FORCE" = 0 ] && depot_check >/dev/null && ensure_betterfps; then
+    echo "game files already in $PZ_DEPOT (--force to download them again)"; return 0
+  fi
+  [ "$OFFLINE" = 0 ] || die "fetch-game: game files missing in $PZ_DEPOT, and --offline rules out a Steam download"
+  if [ "$NONINTERACTIVE" = 1 ]; then
+    if [ -z "$user" ] || ! steam_remembered "$user"; then
+      echo "fetch-game: no remembered Steam login for '${user:-(no --steam-user)}'; log in once without --non-interactive"
+      exit 3
+    fi
+  elif [ "$QR" = 0 ] && [ -z "$user" ]; then
+    read -r -p "Steam username (leave empty to log in with a QR code in the Steam app): " user < /dev/tty
+  fi
+  if [ "$QR" = 1 ] || [ -z "$user" ]; then login=(-qr); else login=(-username "$user"); fi
+  login+=(-remember-password)
+  echo "DepotDownloader asks for the Steam password and Steam Guard code itself; pz-build never sees them."
+  mkdir -p "$PZ_DEPOT"
+  DepotDownloader "${DD_GAME[@]}" "${login[@]}" -dir "$PZ_DEPOT/game" || die "fetch-game: DepotDownloader failed"
+  depot_check || die "fetch-game: the download finished, but the game files are incomplete"
+  if [ "$FORCE" = 1 ] || ! ensure_betterfps; then
+    DepotDownloader -app 108600 -pubfile "$BFPS_ID" "${login[@]}" -dir "$PZ_DEPOT/betterfps" \
+      || die "fetch-game: downloading BetterFPS failed"
+    ensure_betterfps || die "fetch-game: BetterFPS was downloaded, but has no $BFPS_CLASS"
+  fi
+  echo "game files: $PZ_DEPOT"
+}
+
 link_game() {   # the upstream scripts read the game from pz41/game
   local l=$PZROOT/pz41/game
   if [ -e "$l" ] && [ ! -L "$l" ]; then
@@ -303,7 +348,7 @@ stage_nro() {
   echo "NRO: $nro ($(du -h "$nro" | cut -f1))"
 }
 
-ALL_STAGES=(env-check devkitpro deps nro)
+ALL_STAGES=(env-check devkitpro fetch-game deps nro)
 
 # --- command line ----------------------------------------------------------------------------------------------------
 PZROOT=${PZROOT:-$(find_root)} || die "not inside a zomboid-switch checkout (cd into one or set PZROOT)"
@@ -312,7 +357,7 @@ if [ -f "$PZROOT/pz-build.conf" ]; then
   # shellcheck source=/dev/null
   . "$PZROOT/pz-build.conf"
 fi
-FORCE=0 SKIP_MEM=0 OFFLINE=0
+FORCE=0 SKIP_MEM=0 OFFLINE=0 QR=0 NONINTERACTIVE=0
 STAGES=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -321,6 +366,9 @@ while [ $# -gt 0 ]; do
     --force) FORCE=1; shift ;;
     --skip-memcheck) SKIP_MEM=1; shift ;;
     --offline) OFFLINE=1; shift ;;
+    --steam-user) PZ_STEAM_USER=${2:?--steam-user needs a name}; shift 2 ;;
+    --qr) QR=1; shift ;;
+    --non-interactive) NONINTERACTIVE=1; shift ;;
     -h | --help | help) usage; exit 0 ;;
     run) shift; STAGES=(run); break ;;
     -*) die "unknown option $1 (pz-build help)" ;;
