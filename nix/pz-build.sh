@@ -16,6 +16,8 @@ stages, run in the order given:
                when PZ_DEPOT already has them (BetterFPS is also taken from a local Steam workshop folder)
   deps         musl, zlib, libffi, the LWJGL/OpenGL/stb/sqlite natives, box64 and the x86 libraries (setup-deps.sh)
   nro          pz41/pz41.nro from the game files: jar, reflection config, aarch64 native image (needs memory), link
+  sd           the SD card folder (PZ_SD_OUT): switch/pz41.nro, pz41/ with args, x86 libraries, game natives, game
+               data in FAT32-sized parts, the SwitchTreatment mod; no symlinks
   all          every stage below, in order
 
 options:
@@ -348,7 +350,31 @@ stage_nro() {
   echo "NRO: $nro ($(du -h "$nro" | cut -f1))"
 }
 
-ALL_STAGES=(env-check devkitpro fetch-game deps nro)
+# --- sd: the folder to copy to the SD card's root ----------------------------------------------------------------------
+stage_sd() {
+  local nro=$PZROOT/pz41/pz41.nro o=$PZ_SD_OUT fp
+  if [ ! -f "$nro" ] || ! nro_magic_ok "$nro"; then die "sd: no NRO yet (pz-build nro)"; fi
+  depot_check || die "sd: game files missing in $PZ_DEPOT"
+  # the game data (6.6 GB, FAT32-sized parts) only depends on the game files: repack it only when they change
+  fp=$(fingerprint "$(depot_id) $o" pz41/share/setup-sd.py)
+  if [ -f "$o/pz41/xfer/game.tar.00" ] && up_to_date sd-data "$fp"; then
+    echo "game data up to date in $o/pz41/xfer"
+  else
+    unmark sd-data
+    python3 "$PZROOT/pz41/share/setup-sd.py" "$PZ_DEPOT/game/projectzomboid" "$o" || die "sd: setup-sd.py failed"
+    mark sd-data "$fp"
+  fi
+  mkdir -p "$o/switch" "$o/pz41/game/x86libs" "$o/pz41/zomboid/mods"
+  cp "$nro" "$o/switch/pz41.nro"
+  cp "$PZROOT/pz41/args.txt" "$o/pz41/args.txt"
+  cp -L "$PZROOT"/pz-switch/xfer/x86libs/* "$o/pz41/game/x86libs/"
+  rm -rf "$o/pz41/zomboid/mods/SwitchTreatment"
+  cp -r "$PZROOT/pz41/share/mods/SwitchTreatment" "$o/pz41/zomboid/mods/"
+  [ -z "$(find "$o" -type l)" ] || die "sd: $o has symlinks, which a FAT32 card can't hold"
+  echo "SD folder: $o ($(du -sh "$o" | cut -f1)); copy what's inside it to the root of the SD card"
+}
+
+ALL_STAGES=(env-check devkitpro fetch-game deps nro sd)
 
 # --- command line ----------------------------------------------------------------------------------------------------
 PZROOT=${PZROOT:-$(find_root)} || die "not inside a zomboid-switch checkout (cd into one or set PZROOT)"

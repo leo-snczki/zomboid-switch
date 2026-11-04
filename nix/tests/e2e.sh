@@ -11,4 +11,4 @@ command -v pz-build >/dev/null || { echo "FAIL: pz-build is not on PATH (run thi
 export PZ_SD_OUT=${PZ_E2E_SD_OUT:-$ROOT/pz41/out/e2e-sd}
 
 pz-build --offline all
-pz-build run python3 nix/tests/check_outputs.py --nro pz41/pz41.nro --jobj pz41/build-a64/j.o
+pz-build run python3 nix/tests/check_outputs.py --nro pz41/pz41.nro --jobj pz41/build-a64/j.o --sd "$PZ_SD_OUT"
