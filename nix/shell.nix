@@ -1,5 +1,5 @@
 # `nix-shell` (from the repo root, via ../shell.nix): a shell with `pz-build` on PATH.
-{ pkgs ? import <nixpkgs> { } }:
+{ pkgs ? import ./nixpkgs.nix { } }:
 let
   pz = import ./default.nix { inherit pkgs; };
 in

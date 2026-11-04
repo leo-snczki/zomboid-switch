@@ -77,25 +77,24 @@ it. `pz-build help` lists every option.
 | `nro`        | `pz41/pz41.nro`: jar, reflection config, native image, link. A build 42 jar is optional (see below)   |
 | `sd`         | the SD card folder, ready to copy to the card's root                                                   |
 
-**Steam login.** `fetch-game` asks for your Steam username. DepotDownloader then asks for your password and Steam Guard
-code itself, so pz-build never sees them. `--qr` logs in with a QR code in the Steam app instead. The login is
-remembered, so later runs don't ask again. If you already have the Linux 41.78 depot, put it in the game files folder
-(below) as `game/`, or point `--depot` at its parent folder. BetterFPS is also picked up from a local Steam workshop
-folder, including Windows Steam's when running in WSL.
+**Steam login.** `fetch-game` asks for your Steam account name. DepotDownloader then asks for your password and Steam
+Guard code itself, so pz-build never sees them. `--qr` logs in with a QR code in the Steam app instead. The login is
+remembered by account name, so later runs with `--steam-user <name>` don't ask again; that includes a QR login. If you
+already have the Linux 41.78 depot, put it in the game files folder (below) as `game/`, or point `--depot` at its parent
+folder. BetterFPS is also picked up from a local Steam workshop folder, including Windows Steam's when running in WSL.
 
 **Folders.** Under WSL, the game files go to `%USERPROFILE%\pz4-depot` and the SD folder to `%USERPROFILE%\pz4-sd`, so
 Windows can copy it to the card. On native NixOS they go to `~/pz4-depot` and `~/pz4-sd`. Change them with `--depot` and
-`--sd-out`, or with `PZ_DEPOT=...` and `PZ_SD_OUT=...` in a `pz-build.conf` at the repo root.
+`--sd-out`, with `PZ_DEPOT`/`PZ_SD_OUT` in the environment, or with `PZ_DEPOT=...` and `PZ_SD_OUT=...` in a
+`pz-build.conf` at the repo root. Options win over the environment, which wins over `pz-build.conf`.
 
 **Memory.** The native image needs at least 12 GiB of RAM plus swap, and 8 GiB of RAM is recommended (build 41 peaks at
 about 7 GB). `pz-build` checks before it starts. WSL gives Linux only half of the host's RAM by default. If that's too
-little, put this in `%USERPROFILE%\.wslconfig`, leaving Windows about 3 GB, then run `wsl --shutdown`:
+little, pz-build prints the `%USERPROFILE%\.wslconfig` lines for your PC (its RAM minus about 3 GB for Windows, plus
+swap). Then run `wsl --shutdown`.
 
-```
-[wsl2]
-memory=12GB
-swap=16GB
-```
+**Pinned nixpkgs.** `shell.nix` and the flake both use the same nixpkgs revision (`nix/nixpkgs.nix`, `flake.lock`), so
+they build the same thing whatever channel your system follows.
 
 **Build 42 jar.** The build needs LWJGL 3.4.1 and sqlite-jdbc classes. Without a build 42 install, `make-jar.sh` takes
 the same versions from Maven Central (pinned by hash).
@@ -106,11 +105,13 @@ the SD folder. `PZ_STEAM_USER=you nix-shell --run nix/tests/steam.sh` tests the 
 (6.8 GB). It runs only once DepotDownloader remembers your login; otherwise it reports SKIPPED.
 
 **Removing it all.** `pz-build clean` deletes what the build made: the build outputs, `pz-switch/deps`, the devkitPro
-folder and the stage state. It leaves these alone:
+folder and the stage state. It keeps the game files, the SD folder and the Steam login. To remove those too:
 
-- the game files and SD folders: delete them yourself;
-- the remembered Steam login: in `~/.local/share/IsolatedStorage` (DepotDownloader's storage);
-- the Nix store paths: `nix-collect-garbage` reclaims them once nothing refers to them.
+```
+rm -rf <game files folder> <SD folder>          # under WSL, e.g. /mnt/c/Users/<you>/pz4-depot and .../pz4-sd
+rm -rf ~/.local/share/IsolatedStorage           # DepotDownloader's remembered Steam login (.NET isolated storage)
+nix-collect-garbage                             # the toolchains and GraalVM in the Nix store, once nothing uses them
+```
 
 ## Installing
 

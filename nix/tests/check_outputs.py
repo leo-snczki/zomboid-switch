@@ -26,15 +26,14 @@ failures = []
 def check(ok, what):
     print(('ok    ' if ok else 'FAIL  ') + what)
     if not ok: failures.append(what)
+    return ok
 
 
 def check_nro(path):
     data = open(path, 'rb').read()
-    check(data[0x10:0x14] == b'NRO0', '%s: NRO0 magic' % path)
-    if data[0x10:0x14] != b'NRO0': return
+    if not check(data[0x10:0x14] == b'NRO0', '%s: NRO0 magic' % path): return
     size = struct.unpack_from('<I', data, 0x18)[0]
-    check(data[size:size + 4] == b'ASET', '%s: asset section after the %d-byte image' % (path, size))
-    if data[size:size + 4] != b'ASET': return
+    if not check(data[size:size + 4] == b'ASET', '%s: asset section after the %d-byte image' % (path, size)): return
     nacp_off, nacp_size = struct.unpack_from('<QQ', data, size + 0x18)
     nacp = data[size + nacp_off:size + nacp_off + nacp_size]
     title = nacp[0:0x200].split(b'\0')[0].decode()
@@ -46,8 +45,7 @@ def check_nro(path):
 def check_jobj(path):
     out = subprocess.run(['aarch64-linux-gnu-nm', '-u', path], capture_output=True, text=True, check=True).stdout
     undef = {l.split()[-1] for l in out.splitlines() if l.strip()}
-    check(undef == JOBJ_UNDEFINED, '%s: undefined symbols are exactly the Horizon-provided set' % path)
-    if undef != JOBJ_UNDEFINED:
+    if not check(undef == JOBJ_UNDEFINED, '%s: undefined symbols are exactly the Horizon-provided set' % path):
         print('      missing: %s\n      extra: %s' % (sorted(JOBJ_UNDEFINED - undef), sorted(undef - JOBJ_UNDEFINED)))
 
 

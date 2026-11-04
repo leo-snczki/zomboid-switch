@@ -2,7 +2,7 @@
 #   env       FHS build environment (bubblewrap) the upstream scripts run in: /usr/bin/aarch64-linux-gnu-gcc, glibc for
 #             the prebuilt GraalVM/devkitPro/ARM binaries, devkitPro mounted at /opt/devkitpro. No root, no system changes.
 #   pz-build  the orchestrator (nix/pz-build.sh)
-{ pkgs ? import <nixpkgs> { } }:
+{ pkgs ? import ./nixpkgs.nix { } }:
 let
   toolchains = import ./toolchains.nix { inherit pkgs; };
 
