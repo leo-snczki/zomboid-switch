@@ -27,9 +27,10 @@ let
 
   pz-build = pkgs.writeShellApplication {
     name = "pz-build";
-    runtimeInputs = with pkgs; [ coreutils findutils gnugrep gnused gawk ];
+    runtimeInputs = with pkgs; [ coreutils findutils gnugrep gnused gawk util-linux pacman gnupg ];
     runtimeEnv = {
       PZ_FHS = "${env}/bin/pz-switch-env";
+      PZ_PACMAN_CONF = "${./devkitpro-pacman.conf}";
     };
     excludeShellChecks = [ "SC2016" ];   # single-quoted command lines handed to the environment are meant literally
     text = builtins.readFile ./pz-build.sh;

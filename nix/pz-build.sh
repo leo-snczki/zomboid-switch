@@ -10,6 +10,8 @@ usage: pz-build [options] <stage>...
 
 stages, run in the order given:
   env-check    toolchain versions, devkitPro status, memory check (with .wslconfig advice on WSL)
+  devkitpro    install devkitPro's Switch packages into PZ_DKP_ROOT, signatures checked, no root
+               (default ~/.local/share/pz-switch/dkp-root; --force to update)
   all          every stage below, in order
 
 options:
@@ -96,10 +98,49 @@ dkp_ok() {
 }
 dkp_report() {
   if dkp_ok; then
-    echo "devkitPro:    $PZ_DKP_ROOT/opt/devkitpro"
+    echo "devkitPro:    $(pacman --config "$PZ_DKP_ROOT/etc/pacman.conf" --root "$PZ_DKP_ROOT" --dbpath "$PZ_DKP_ROOT/var/lib/pacman" \
+      -Q devkitA64 libnx switch-mesa switch-libdrm_nouveau 2>/dev/null | tr '\n' ' ')"
+    echo "              in $PZ_DKP_ROOT/opt/devkitpro"
   else
     echo "devkitPro:    not installed (pz-build devkitpro)"
   fi
+}
+
+# devkitPro's server only serves pacman (plain curl gets 403), so everything goes through pacman: no User-Agent tricks,
+# no unsigned packages. pacman runs in a user namespace (unshare -r), so no root is needed.
+DKP_WINTERMUTE_KEY=BC26F752D25B92CE272E0F44F7FD5492264BB9D0   # Dave Murphy (WinterMute): signs devkitpro-keyring
+DKP_REPO_KEY=032F4C9D0B8FF3BC84019B7862C7609ADA219C60         # signs the repositories today; comes with devkitpro-keyring
+DKP_PACKAGES=(devkitpro-keyring switch-dev switch-mesa switch-libdrm_nouveau)
+dkp_key() { unshare -r pacman-key --config "$PZ_DKP_ROOT/etc/pacman.conf" --gpgdir "$PZ_DKP_ROOT/etc/pacman.d/gnupg" "$@"; }
+dkp_pacman() {
+  unshare -r pacman --config "$PZ_DKP_ROOT/etc/pacman.conf" --root "$PZ_DKP_ROOT" --dbpath "$PZ_DKP_ROOT/var/lib/pacman" \
+    --cachedir "$PZ_DKP_ROOT/var/cache/pacman/pkg" --gpgdir "$PZ_DKP_ROOT/etc/pacman.d/gnupg" \
+    --noconfirm --noprogressbar --noscriptlet "$@"
+}
+
+stage_devkitpro() {
+  local r=$PZ_DKP_ROOT kr k
+  if [ "$FORCE" = 0 ] && dkp_ok; then dkp_report; return 0; fi
+  mkdir -p "$r/etc/pacman.d/gnupg" "$r/var/lib/pacman/sync" "$r/var/cache/pacman/pkg" "$r/opt/devkitpro"
+  install -m 644 "$PZ_PACMAN_CONF" "$r/etc/pacman.conf"
+  if [ ! -e "$r/etc/pacman.d/gnupg/pubring.gpg" ] && [ ! -e "$r/etc/pacman.d/gnupg/pubring.kbx" ]; then dkp_key --init; fi
+  if ! dkp_key --list-keys "$DKP_WINTERMUTE_KEY" >/dev/null 2>&1; then
+    dkp_key --keyserver hkps://keyserver.ubuntu.com --recv-keys "$DKP_WINTERMUTE_KEY"
+    dkp_key --lsign-key "$DKP_WINTERMUTE_KEY"
+  fi
+  # a sync that failed earlier leaves databases pacman refuses to load (even for -U); -Sy fetches them again
+  rm -f "$r"/var/lib/pacman/sync/*
+  if ! dkp_key --list-keys "$DKP_REPO_KEY" >/dev/null 2>&1; then
+    # pacman checks the keyring package's signature against WinterMute's key before installing it
+    dkp_pacman -U https://pkg.devkitpro.org/devkitpro-keyring.pkg.tar.zst
+    kr=$r/usr/share/pacman/keyrings   # what `pacman-key --populate devkitpro` would do (scriptlets are off)
+    dkp_key --add "$kr/devkitpro.gpg"
+    while IFS=: read -r k _; do [ -z "$k" ] || dkp_key --lsign-key "$k"; done < "$kr/devkitpro-trusted"
+    while IFS=: read -r k _; do [ -z "$k" ] || dkp_key --delete "$k" || true; done < "$kr/devkitpro-revoked"
+  fi
+  dkp_pacman -Sy --needed "${DKP_PACKAGES[@]}"
+  dkp_ok || die "pacman finished but devkitPro files are missing under $r/opt/devkitpro"
+  dkp_report
 }
 
 # --- stages ----------------------------------------------------------------------------------------------------------
@@ -129,7 +170,7 @@ stage_env_check() {
   [ $ok = 0 ] || die "env-check failed"
 }
 
-ALL_STAGES=(env-check)
+ALL_STAGES=(env-check devkitpro)
 
 # --- command line ----------------------------------------------------------------------------------------------------
 PZROOT=${PZROOT:-$(find_root)} || die "not inside a zomboid-switch checkout (cd into one or set PZROOT)"
