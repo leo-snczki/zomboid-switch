@@ -73,8 +73,9 @@ def check_sd(sd, nro):
           'pz41/xfer: game data parts %s' % ', '.join(parts))
     check(sizes and all(s == SD_PART for s in sizes[:-1]) and 0 < sizes[-1] <= SD_PART,
           'every game data part but the last is exactly 3900 MiB')
-    info = j('pz41', 'zomboid', 'mods', 'SwitchTreatment', 'mod.info')
-    check(os.path.isfile(info) and 'id=SwitchTreatment' in open(info).read(), 'pz41/zomboid/mods/SwitchTreatment')
+    for mod in ('SwitchTreatment', 'SwitchInput'):
+        info = j('pz41', 'zomboid', 'mods', mod, 'mod.info')
+        check(os.path.isfile(info) and 'id=%s' % mod in open(info).read(), 'pz41/zomboid/mods/%s' % mod)
 
 
 def main():
