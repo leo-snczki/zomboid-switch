@@ -240,6 +240,16 @@ static int pad_buttons[3];          // mouse buttons from the controller (pad->k
 static unsigned char usb_buttons[8];   // USB mouse buttons, GLFW numbering
 static int kb_mods;                 // GLFW_MOD_* bits from the USB keyboard, for key and mouse button events
 static int cursor_mode = GLFW_CURSOR_NORMAL;
+// Project Zomboid gives a player back to mouse and keyboard only when their controller is unplugged
+// (JoypadManager.onControllerDisconnected); a controller button later brings up its own "take over player" list.
+// Controller 1 can't be unplugged on the Switch, so using the USB mouse (a click, or moving it a little) reports it
+// disconnected, and pressing one of its buttons reports it connected again.
+static int pad_handed_over, mouse_travel;
+static void pad_hand_over(void) {
+    if (pad_handed_over) return;
+    pad_handed_over = 1;
+    lx_logf("controller 1 hands over to the USB mouse/keyboard\n");
+}
 static int padkbm;                  // controller as keyboard + mouse (sdmc:/<app>/padkbm), for games without pad support
 static unsigned char keys[512];       // what the game sees: USB keyboard OR controller
 static unsigned char kb_keys[512], pad_keys[512];   // each source on its own, so one can't release the other's keys
@@ -271,7 +281,16 @@ static void update_pad(void) {
     for (int i = 0; i < NPADS; i++) {
         padUpdate(&pads[i]);
         int was = pad_present[i];
-        pad_present[i] = i == 0 || padIsConnected(&pads[i]);
+        // controller 1 is always there on the Switch; it steps aside while the USB mouse is used (see pad_hand_over) and
+        // comes back with a button press. Minus/Plus (the system keyboard combo) don't count.
+        const u64 takeback = HidNpadButton_A | HidNpadButton_B | HidNpadButton_X | HidNpadButton_Y | HidNpadButton_L |
+            HidNpadButton_R | HidNpadButton_ZL | HidNpadButton_ZR | HidNpadButton_StickL | HidNpadButton_StickR |
+            HidNpadButton_Up | HidNpadButton_Down | HidNpadButton_Left | HidNpadButton_Right;
+        if (i == 0 && pad_handed_over && (padGetButtonsDown(&pads[0]) & takeback)) {
+            pad_handed_over = 0; mouse_travel = 0;
+            lx_logf("controller 1 back from the USB mouse/keyboard\n");
+        }
+        pad_present[i] = i == 0 ? !pad_handed_over : padIsConnected(&pads[i]);
         if (was != pad_present[i]) { lx_logf("pad %d %s\n", i + 1, pad_present[i] ? "connected" : "disconnected"); if (cb.joystick) cb.joystick(i, pad_present[i] ? 0x40001 : 0x40002); }
         u64 pb = pad_present[i] ? padGetButtons(&pads[i]) : 0;
         for (int k = 0; k < 15; k++) gp_buttons[i][k] = map[k] && (pb & map[k]) ? 1 : 0;
@@ -534,10 +553,14 @@ static void glfwPollEvents(void) {
                 int down = (ms[i].buttons >> b) & 1;
                 if (down == (int)((ms_held >> b) & 1)) continue;
                 usb_buttons[glfw_button[b]] = down;
+                if (down) pad_hand_over();
                 if (cb.button) cb.button(&win, glfw_button[b], down, kb_mods);
             }
             ms_held = ms[i].buttons;
         }
+        // a deliberate move, not a nudge: more than 24 px without stopping
+        mouse_travel = dx || dy ? mouse_travel + (int)(fabs(dx) + fabs(dy)) : 0;
+        if (mouse_travel > 24) pad_hand_over();
         if (dx || dy) {
             mouse_x += dx * W / 1280.0; mouse_y += dy * H / 720.0;
             if (cursor_mode != GLFW_CURSOR_DISABLED) {

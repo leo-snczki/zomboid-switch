@@ -167,6 +167,33 @@ static void statlog(void *arg) {
     }
 }
 
+// key=value in the game's options.ini: replaced where it is, added if missing
+static void options_force(const char *path, const char *key, const char *value) {
+    static char buf[64 << 10];
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    char want[128];
+    snprintf(want, sizeof want, "%s=%s", key, value);
+    size_t kl = strlen(key), wl = strlen(want);
+    char *line = NULL;
+    for (char *p = buf; p && *p; p = strchr(p, '\n') ? strchr(p, '\n') + 1 : NULL)
+        if (!strncmp(p, key, kl) && p[kl] == '=') { line = p; break; }
+    if (line) {
+        char *end = line + strcspn(line, "\r\n");
+        if ((size_t)(end - line) == wl && !strncmp(line, want, wl)) return;   // already so
+        if (!(f = fopen(path, "wb"))) return;
+        fwrite(buf, 1, line - buf, f); fputs(want, f); fputs(end, f);
+    } else {
+        if (!(f = fopen(path, "ab"))) return;
+        fprintf(f, "%s%s\r\n", n && buf[n - 1] != '\n' ? "\r\n" : "", want);
+    }
+    fclose(f);
+    lx_logf("options.ini: %s\n", want);
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     lx_fs_init();
@@ -215,6 +242,9 @@ int main(int argc, char **argv) {
             lx_logf("wrote low-memory options.ini\n");
         }
     }
+    // The game draws its own mouse pointer only with "Lock cursor to window" on (Core.EndFrameUI); otherwise it leaves
+    // that to the system's pointer, which the Switch doesn't have. On every start, so a USB mouse is always visible.
+    options_force(LX_ROOT "/zomboid/options.ini", "lockCursorToWindow", "true");
 
     // arguments: one per line from args.txt (argv[0] included)
     static char *args[256];
