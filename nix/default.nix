@@ -31,6 +31,8 @@ let
     runtimeEnv = {
       PZ_FHS = "${env}/bin/pz-switch-env";
       PZ_PACMAN_CONF = "${./devkitpro-pacman.conf}";
+      # what built objects depend on, for pz-build's up-to-date checks (unlike the environment as a whole)
+      PZ_TOOLCHAINS = "${toolchains.armToolchain} ${toolchains.graalvm}";
     };
     excludeShellChecks = [ "SC2016" ];   # single-quoted command lines handed to the environment are meant literally
     text = builtins.readFile ./pz-build.sh;

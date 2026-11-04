@@ -12,6 +12,7 @@ stages, run in the order given:
   env-check    toolchain versions, devkitPro status, memory check (with .wslconfig advice on WSL)
   devkitpro    install devkitPro's Switch packages into PZ_DKP_ROOT, signatures checked, no root
                (default ~/.local/share/pz-switch/dkp-root; --force to update)
+  deps         musl, zlib, libffi, the LWJGL/OpenGL/stb/sqlite natives, box64 and the x86 libraries (setup-deps.sh)
   all          every stage below, in order
 
 options:
@@ -59,6 +60,7 @@ fingerprint() {   # fingerprint <extra string> <repo paths...>
     | sha256sum | cut -c1-16
 }
 mark() { mkdir -p "$STATE"; echo "$2" > "$STATE/$1.done"; }
+unmark() { rm -f "$STATE/$1.done"; }   # before a stage starts work, so a failed run is never taken as up to date
 up_to_date() { [ "$FORCE" = 0 ] && [ -f "$STATE/$1.done" ] && [ "$(cat "$STATE/$1.done")" = "$2" ]; }
 
 # --- memory --------------------------------------------------------------------------------------------------------
@@ -170,7 +172,27 @@ stage_env_check() {
   [ $ok = 0 ] || die "env-check failed"
 }
 
-ALL_STAGES=(env-check devkitpro)
+# --- deps: musl (plain + Horizon), zlib, libffi, LWJGL/OpenGL/stb and sqlite natives, box64 + JNI bridge, x86 libs ----
+DEPS_IN=(pz-switch/setup-deps.sh pz-switch/build-natives.sh pz-switch/build-box64.sh pz-switch/horizon/box64
+         pz-switch/horizon/musl-nx.patch pz-switch/horizon/jside)
+DEPS_OUT=(pz-switch/deps/natives-out/lwjgl.o pz-switch/deps/natives-out/lwjgl_opengl.o pz-switch/deps/natives-out/lwjgl_stb.o
+          pz-switch/deps/natives-out/sqlitejdbc.o pz-switch/deps/natives-out/box64.o
+          pz-switch/xfer/x86libs/_ld-linux-x86-64.so.2 pz-switch/xfer/x86libs/_libc.so.6 pz-switch/xfer/x86libs/libgcc_s.so.1
+          pz-switch/xfer/x86libs/libjniwrapper.so pz-switch/xfer/x86libs/libstdc++.so.6)
+outputs_ok() { local f; for f in "$@"; do [ -s "$PZROOT/$f" ] || { echo "missing: $f"; return 1; }; done; }
+deps_fp() { fingerprint "$PZ_TOOLCHAINS" "${DEPS_IN[@]}"; }
+
+stage_deps() {
+  local fp; fp=$(deps_fp)
+  if outputs_ok "${DEPS_OUT[@]}" >/dev/null && up_to_date deps "$fp"; then echo "up to date"; return 0; fi
+  unmark deps
+  # setup-deps.sh skips what it already built (musl, zlib, libffi, clones); natives and box64 are rebuilt
+  in_env './pz-switch/setup-deps.sh' || die "deps: setup-deps.sh failed"
+  outputs_ok "${DEPS_OUT[@]}" || die "deps: setup-deps.sh finished, but outputs are missing"
+  mark deps "$fp"
+}
+
+ALL_STAGES=(env-check devkitpro deps)
 
 # --- command line ----------------------------------------------------------------------------------------------------
 PZROOT=${PZROOT:-$(find_root)} || die "not inside a zomboid-switch checkout (cd into one or set PZROOT)"
