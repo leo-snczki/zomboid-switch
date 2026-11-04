@@ -134,11 +134,16 @@ and copy `out/pz41` onto the card. Start the NRO in full-RAM mode (hold R while 
 into the world takes 3-4 minutes. Controller and touch screen both work.
 
 A USB mouse and keyboard work too, in the dock or through a USB-C adapter. The game gets them as on PC: the pointer,
-five mouse buttons, the wheel, keys with Shift/Ctrl/Alt and key repeat. The game's own pointer is always shown
+five mouse buttons, the wheel, keys with Shift/Ctrl/Alt and key repeat. The game draws its own pointer
 (`lockCursorToWindow` is turned on at start), since the Switch has no system pointer. Using the mouse, with a click or a
 move, hands player 1 from the controller to mouse and keyboard, as unplugging the controller would on PC: WASD,
 pointer and keyboard prompts. Pressing a controller button brings the controller back, and the game offers to take
-over player 1. Typed text follows the US layout. For
+over player 1.
+
+Turn on the **Switch Input** mod in the game's Mods menu, and for existing saves in that save's mods. Through it, the
+runtime knows which controller player 1 is on. The pointer hides while player 1 plays on the controller (and shows
+under a finger on the touchscreen). In split screen, the mouse never takes the controller from player 2. Without the
+mod, the mouse always takes controller 1, which suits a single player. Typed text follows the US layout. For
 your own layout (for example Portuguese), open the system keyboard with Minus + Plus: it takes the USB keyboard in the
 layout set in the console's settings.
 

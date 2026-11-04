@@ -382,7 +382,8 @@ stage_nro() {
 
 # --- sd: the folder to copy to the SD card's root ----------------------------------------------------------------------
 SD_OUT=(switch/pz41.nro pz41/args.txt pz41/xfer/game.tar.00 pz41/game/natives/libPZPopMan64.so
-        pz41/game/natives/libfmod.so.13 pz41/zomboid/mods/SwitchTreatment/mod.info "${X86LIBS[@]/#/pz41/game/x86libs/}")
+        pz41/game/natives/libfmod.so.13 pz41/zomboid/mods/SwitchTreatment/mod.info pz41/zomboid/mods/SwitchInput/mod.info
+        "${X86LIBS[@]/#/pz41/game/x86libs/}")
 stage_sd() {
   local o=$PZ_SD_OUT fp
   nro_ok || die "sd: no NRO yet (pz-build nro)"
@@ -400,8 +401,12 @@ stage_sd() {
   cp "$PZROOT/$NRO" "$o/switch/pz41.nro"
   cp "$PZROOT/pz41/args.txt" "$o/pz41/args.txt"
   cp -L "$PZROOT"/pz-switch/xfer/x86libs/* "$o/pz41/game/x86libs/"
-  rm -rf "$o/pz41/zomboid/mods/SwitchTreatment"
-  cp -r "$PZROOT/pz41/share/mods/SwitchTreatment" "$o/pz41/zomboid/mods/"
+  local mod
+  for mod in "$PZROOT"/pz41/share/mods/*/; do   # the repo's Switch mods (turned on in the game's Mods menu)
+    mod=${mod%/}
+    rm -rf "${o:?}/pz41/zomboid/mods/${mod##*/}"
+    cp -r "$mod" "$o/pz41/zomboid/mods/"
+  done
   outputs_ok "$o" "${SD_OUT[@]}" || die "sd: the SD folder is incomplete"
   [ -z "$(find "$o" -type l)" ] || die "sd: $o has symlinks, which a FAT32 card can't hold"
   echo "SD folder: $o ($(du -sh "$o" | cut -f1)); copy what's inside it to the root of the SD card"

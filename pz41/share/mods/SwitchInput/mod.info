@@ -1,0 +1,3 @@
+name=Switch Input (mouse and keyboard)
+id=SwitchInput
+description=Tells the Switch runtime whether player 1 is on a controller or on mouse and keyboard. Then a USB mouse takes player 1 over from controller 1 only when that controller is player 1's (never player 2's in split screen), and the mouse pointer hides while player 1 plays on the controller. Build 41.

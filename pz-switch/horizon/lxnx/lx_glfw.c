@@ -43,6 +43,7 @@ static struct {
 } cb;
 
 static int padkbm;   // see pad_kbm()
+#define SWITCH_INPUT LX_ROOT "/zomboid/Lua/switch_input.txt"   // see read_switch_input()
 static int glfwInit(void) {
     if (inited) return 1;
     padConfigureInput(4, HidNpadStyleSet_NpadStandard);   // NPADS
@@ -51,6 +52,7 @@ static int glfwInit(void) {
     hidInitializeTouchScreen();
     hidInitializeKeyboard();
     hidInitializeMouse();
+    remove(SWITCH_INPUT);   // what the SwitchInput mod wrote last session says nothing about this one
     inited = 1;
     lx_logf("glfw: init\n");
     return 1;
@@ -245,10 +247,51 @@ static int cursor_mode = GLFW_CURSOR_NORMAL;
 // Controller 1 can't be unplugged on the Switch, so using the USB mouse (a click, or moving it a little) reports it
 // disconnected, and pressing one of its buttons reports it connected again.
 static int pad_handed_over, mouse_travel;
+
+// Which controller player 1 is on, as the game says through the SwitchInput mod (pz41/share/mods/SwitchInput):
+// -1 = mouse and keyboard, n = controller n. -2 = unknown: the mod isn't running in this game.
+static int p1_pad = -2;
+static void read_switch_input(void) {
+    static int polls; static long seq = -1; static u64 seq_tick;
+    if (polls++ % 15) return;   // a few times a second
+    u64 now = armGetSystemTick();
+    FILE *f = fopen(SWITCH_INPUT, "r");
+    if (f) {
+        int pad; long s;
+        if (fscanf(f, "%d %ld", &pad, &s) == 2 && s != seq) {
+            if (pad != p1_pad) lx_logf("SwitchInput: player 1 on %s %d\n", pad < 0 ? "mouse/keyboard" : "controller", pad + 1);
+            seq = s; seq_tick = now; p1_pad = pad;
+        }
+        fclose(f);
+    }
+    if (seq < 0 || armTicksToNs(now - seq_tick) > 3000000000ull) p1_pad = -2;   // the mod writes every second
+}
+
+// Using the USB mouse takes player 1 from controller 1 only if that controller is player 1's: in split screen it's
+// player 2's (and player 1 already has the mouse). Without the mod, assume a single player.
+static int mouse_takes_pad(void) { return p1_pad == -2 || p1_pad == 0; }
+
+// The game draws its pointer wherever it's told the mouse is (lockCursorToWindow keeps it on), so the pointer is
+// hidden by telling it the bottom-right corner, where the game draws it just off screen. Shown while player 1 is on
+// mouse and keyboard, while a finger is on the touchscreen (and a moment after, so its click lands), and in pad->kbm.
+static int touch_grace;
+static double told_x = -1, told_y = -1;
+static int pointer_shown(void) {   // pad_handed_over: until the game (or the mod) catches up
+    return padkbm || touch_grace > 0 || pad_handed_over || p1_pad == -1;
+}
+static void pointer_update(void) {
+    int shown = pointer_shown();
+    double x = shown ? mouse_x : W, y = shown ? mouse_y : H;
+    if (x == told_x && y == told_y) return;
+    told_x = x; told_y = y;
+    if (cb.cursor) cb.cursor(&win, x, y);
+}
+
 static void pad_hand_over(void) {
-    if (pad_handed_over) return;
+    if (pad_handed_over || !mouse_takes_pad()) return;
     pad_handed_over = 1;
     lx_logf("controller 1 hands over to the USB mouse/keyboard\n");
+    pointer_update();   // shown before the click that did it reaches the game
 }
 static int padkbm;                  // controller as keyboard + mouse (sdmc:/<app>/padkbm), for games without pad support
 static unsigned char keys[512];       // what the game sees: USB keyboard OR controller
@@ -438,7 +481,7 @@ static void pad_kbm(void) {
         if (cb.scroll && (down & (HidNpadButton_R | HidNpadButton_Right))) cb.scroll(&win, 0, -1);
         double dz = 0.12, speed = 900 * dt;   // look: pixels/s at full tilt, squared response for fine aim
         double mx = fabs(rx) > dz ? rx * fabs(rx) : 0, my = fabs(ry) > dz ? ry * fabs(ry) : 0;
-        if (mx || my) { mouse_x += mx * speed; mouse_y -= my * speed; if (cb.cursor) cb.cursor(&win, mouse_x, mouse_y); }
+        if (mx || my) { mouse_x += mx * speed; mouse_y -= my * speed; pointer_update(); }
     } else {
         // nothing stays held into a menu, except keys that menus read too (re-pressing E while X is still down would
         // close the inventory X just opened, over and over)
@@ -450,7 +493,7 @@ static void pad_kbm(void) {
             mouse_x += mx * speed; mouse_y -= my * speed;
             if (mouse_x < 0) mouse_x = 0; if (mouse_x > W - 1) mouse_x = W - 1;
             if (mouse_y < 0) mouse_y = 0; if (mouse_y > H - 1) mouse_y = H - 1;
-            if (cb.cursor) cb.cursor(&win, mouse_x, mouse_y);
+            pointer_update();
         }
         button_event(0, !!(b & (HidNpadButton_A | HidNpadButton_ZR)));
         button_event(1, !!(b & HidNpadButton_Y));
@@ -463,6 +506,7 @@ static void pad_kbm(void) {
 
 static void glfwPollEvents(void) {
     if (!appletMainLoop()) { win.should_close = 1; if (cb.close) cb.close(&win); }
+    read_switch_input();
     update_pad();
     if (padkbm) pad_kbm();
     // touchscreen -> mouse: one finger = left button, two fingers = right button
@@ -485,10 +529,12 @@ static void glfwPollEvents(void) {
             else if (armTicksToNs(armGetSystemTick() - t0) >= 1000000000ull) held = 1;
         }
         int want = ts.count >= 2 || held ? 1 : multi ? -1 : ts.count - 1;
+        if (ts.count) touch_grace = 8;   // the pointer stays where the finger was until its delayed click is through
+        else if (touch_grace > 0) touch_grace--;
         if (ts.count && !multi && !held) {
-            double x = ts.touches[0].x * W / 1280.0, y = ts.touches[0].y * H / 720.0;
-            if (x != mouse_x || y != mouse_y) { mouse_x = x; mouse_y = y; if (cb.cursor) cb.cursor(&win, x, y); }
+            mouse_x = ts.touches[0].x * W / 1280.0; mouse_y = ts.touches[0].y * H / 720.0;
         }
+        pointer_update();
         // The cursor moves at once but button changes are 3 polls late: the game's popup menus only take a click on the
         // item that was already highlighted, and a click in the same frame as the move needed a second tap.
         static int hist[4] = { -1, -1, -1, -1 };
@@ -569,13 +615,14 @@ static void glfwPollEvents(void) {
                 if (mouse_y < 0) mouse_y = 0;
                 if (mouse_y > H - 1) mouse_y = H - 1;
             }
-            if (cb.cursor) cb.cursor(&win, mouse_x, mouse_y);
+            pointer_update();
         }
     } else if (ms_started) {   // unplugged: let go of whatever it held
         ms_started = 0; ms_held = 0;
         for (int b = 0; b < 8; b++)
             if (usb_buttons[b]) { usb_buttons[b] = 0; if (cb.button) cb.button(&win, b, 0, kb_mods); }
     }
+    pointer_update();   // shown or hidden as player 1 moved between controller and mouse
 }
 static void glfwWaitEvents(void) { glfwPollEvents(); }
 static void glfwWaitEventsTimeout(double t) { (void)t; glfwPollEvents(); }
@@ -586,8 +633,18 @@ static int glfwGetMouseButton(Win *w, int b) {
     if (b < 0 || b >= 8) return 0;
     return usb_buttons[b] || (b < 3 && (b == mouse_btn || pad_buttons[b]));
 }
-static void glfwGetCursorPos(Win *w, double *x, double *y) { (void)w; if (x) *x = mouse_x; if (y) *y = mouse_y; }
-static void glfwSetCursorPos(Win *w, double x, double y) { (void)w; mouse_x = x; mouse_y = y; }
+// the game sees the pointer where it's told it is (parked off screen while hidden, see pointer_update)
+static void glfwGetCursorPos(Win *w, double *x, double *y) {
+    (void)w;
+    int shown = pointer_shown();
+    if (x) *x = shown ? mouse_x : W;
+    if (y) *y = shown ? mouse_y : H;
+}
+static void glfwSetCursorPos(Win *w, double x, double y) {   // the game keeping the pointer in the window
+    (void)w;
+    told_x = x; told_y = y;
+    if (pointer_shown()) { mouse_x = x; mouse_y = y; }   // a hidden pointer keeps its real place for later
+}
 static int glfwGetInputMode(Win *w, int m) { (void)w; return m == GLFW_CURSOR ? cursor_mode : 0; }
 static void glfwSetInputMode(Win *w, int m, int v) { (void)w; if (m == GLFW_CURSOR) cursor_mode = v; }
 static const char *glfwGetKeyName(int k, int s) { (void)k; (void)s; return NULL; }
