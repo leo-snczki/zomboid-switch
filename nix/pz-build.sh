@@ -13,6 +13,7 @@ stages, run in the order given:
   devkitpro    install devkitPro's Switch packages into PZ_DKP_ROOT, signatures checked, no root
                (default ~/.local/share/pz-switch/dkp-root; --force to update)
   deps         musl, zlib, libffi, the LWJGL/OpenGL/stb/sqlite natives, box64 and the x86 libraries (setup-deps.sh)
+  nro          pz41/pz41.nro from the game files: jar, reflection config, aarch64 native image (needs memory), link
   all          every stage below, in order
 
 options:
@@ -20,6 +21,7 @@ options:
   --sd-out DIR      the SD card folder to build                                                  [PZ_SD_OUT]
   --force           redo stages even when their outputs are up to date
   --skip-memcheck   build the native image even below the memory threshold
+  --offline         never log into Steam; fail when game files are missing
 
 Defaults: on WSL <Windows user profile>\pz4-depot and \pz4-sd, otherwise ~/pz4-depot and ~/pz4-sd.
 Settings can also be kept in pz-build.conf at the repo root (shell syntax, e.g. PZ_DEPOT=/mnt/d/pz4-depot).
@@ -192,7 +194,116 @@ stage_deps() {
   mark deps "$fp"
 }
 
-ALL_STAGES=(env-check devkitpro deps)
+# --- game files: PZ_DEPOT/game = Linux depot 108603 (manifest of 41.78), PZ_DEPOT/betterfps = workshop item -------------
+DEPOT_MANIFEST=108603_8887512142279836582
+DEPOT_REQUIRED=(media stdlib.lbc stdlib.lua serialize.lua projectzomboid.png zombie lwjgl_util.jar sqlite-jdbc-3.27.2.1.jar
+  commons-compress-1.18.jar istack-commons-runtime.jar jassimp.jar javacord-2.0.17-shaded.jar javax.activation-api.jar
+  jaxb-api.jar jaxb-runtime.jar trove-3.0.3.jar uncommons-maths-1.2.3.jar libfmodintegration64.so libjassimp64.so
+  libLighting64.so libPZBullet64.so libPZBulletNoOpenGL64.so libPZClipper64.so libPZPopMan64.so libRakNet64.so
+  libZNetNoSteam64.so linux64/libfmod.so.13.6 linux64/libfmodstudio.so.13.6)
+BFPS_ID=3022543997
+BFPS_CLASS=mods/BetterFPS/media/PotatoePC/zombie/iso/IsoChunkMap.class
+
+depot_check() {   # lists what's missing; returns 1 if anything is
+  local g=$PZ_DEPOT/game/projectzomboid f missing=()
+  for f in "${DEPOT_REQUIRED[@]}"; do [ -e "$g/$f" ] || missing+=("$f"); done
+  if [ ${#missing[@]} -gt 0 ]; then
+    echo "game files in $PZ_DEPOT/game are incomplete; missing from projectzomboid/: ${missing[*]}"
+    return 1
+  fi
+  if [ -d "$PZ_DEPOT/game/.DepotDownloader" ] && [ ! -f "$PZ_DEPOT/game/.DepotDownloader/$DEPOT_MANIFEST.manifest" ]; then
+    echo "$PZ_DEPOT/game was downloaded from another manifest than $DEPOT_MANIFEST (build 41.78)"
+    return 1
+  fi
+}
+depot_id() {   # changes when the game files do
+  if [ -f "$PZ_DEPOT/game/.DepotDownloader/$DEPOT_MANIFEST.manifest.sha" ]; then
+    cat "$PZ_DEPOT/game/.DepotDownloader/$DEPOT_MANIFEST.manifest.sha"
+  else
+    (cd "$PZ_DEPOT/game/projectzomboid" && stat -c '%n %s %Y' "${DEPOT_REQUIRED[@]}")
+  fi | sha256sum | cut -c1-16
+}
+
+betterfps_sources() {   # places that may already hold the BetterFPS workshop item
+  echo "$PZ_DEPOT/betterfps"
+  echo "$HOME/.local/share/Steam/steamapps/workshop/content/108600/$BFPS_ID"
+  echo "$HOME/.steam/steam/steamapps/workshop/content/108600/$BFPS_ID"
+  if is_wsl; then echo "/mnt/c/Program Files (x86)/Steam/steamapps/workshop/content/108600/$BFPS_ID"; fi
+}
+ensure_betterfps() {   # BetterFPS in PZ_DEPOT/betterfps, and its IsoChunkMap in the jar step's mod overlay
+  local d
+  if [ ! -f "$PZ_DEPOT/betterfps/$BFPS_CLASS" ]; then
+    while read -r d; do
+      if [ -f "$d/$BFPS_CLASS" ]; then
+        mkdir -p "$PZ_DEPOT/betterfps" && cp -r "$d/." "$PZ_DEPOT/betterfps/"
+        echo "BetterFPS: copied from $d"
+        break
+      fi
+    done < <(betterfps_sources)
+  fi
+  [ -f "$PZ_DEPOT/betterfps/$BFPS_CLASS" ] || return 1
+  install -D -m 644 "$PZ_DEPOT/betterfps/$BFPS_CLASS" "$PZROOT/pz41/mods/betterfps/classes/zombie/iso/IsoChunkMap.class"
+}
+
+link_game() {   # the upstream scripts read the game from pz41/game
+  local l=$PZROOT/pz41/game
+  if [ -e "$l" ] && [ ! -L "$l" ]; then
+    [ "$(readlink -f "$l")" = "$(readlink -f "$PZ_DEPOT/game")" ] || die "pz41/game is a real folder; move it into $PZ_DEPOT/game or point --depot at its parent"
+    return 0
+  fi
+  ln -sfn "$PZ_DEPOT/game" "$l"
+}
+
+# --- nro: pz41.jar -> Lua/JNI reachability config -> aarch64 native image -> pz41.nro ---------------------------------
+NRO_IN=(pz41/make-jar.sh pz41/b42-substitute.sh pz41/build-image.sh pz41/build-nro.sh pz41/patches pz41/config-res
+        pz-switch/build-a64.sh pz-switch/prelink-j.sh pz-switch/gen-lua-config.py pz-switch/gen-natives.py pz-switch/tools
+        pz-switch/config pz-switch/buildtime.txt pz-switch/cap-a64 pz-switch/horizon/app/Makefile pz-switch/horizon/lxnx
+        pz-switch/horizon/jside)
+b42_detect() {   # a build 42 game jar, if one is installed, is used for LWJGL/sqlite-jdbc (else make-jar.sh substitutes)
+  local j
+  for j in "${B42JAR:-}" "$HOME/.steam/steam/steamapps/common/ProjectZomboid/projectzomboid/projectzomboid.jar" \
+           "$HOME/.local/share/Steam/steamapps/common/ProjectZomboid/projectzomboid/projectzomboid.jar" \
+           "/mnt/c/Program Files (x86)/Steam/steamapps/common/ProjectZomboid/projectzomboid.jar"; do
+    if [ -n "$j" ] && [ -f "$j" ]; then export B42JAR=$j; return 0; fi
+  done
+  unset B42JAR
+}
+nro_magic_ok() { [ "$(dd if="$1" bs=1 skip=16 count=4 2>/dev/null)" = NRO0 ]; }
+
+stage_nro() {
+  local nro=$PZROOT/pz41/pz41.nro log=$PZROOT/pz41/ni-a64.log fp tailpid
+  if ! depot_check; then
+    [ "$OFFLINE" = 1 ] && die "nro: game files missing, and --offline rules out a Steam download (use --depot)"
+    die "nro: game files missing (pz-build fetch-game, or --depot)"
+  fi
+  ensure_betterfps || die "nro: BetterFPS (workshop item $BFPS_ID) not found; pz-build fetch-game downloads it"
+  link_game
+  outputs_ok "${DEPS_OUT[@]}" >/dev/null || die "nro: dependencies missing (pz-build deps)"
+  dkp_ok || die "nro: devkitPro missing (pz-build devkitpro)"
+  b42_detect
+  fp=$(fingerprint "$PZ_TOOLCHAINS $(deps_fp) $(depot_id) ${B42JAR:-substitute} $(dkp_report | head -1)" \
+       "${NRO_IN[@]}" pz41/mods)
+  if [ -s "$nro" ] && up_to_date nro "$fp"; then echo "up to date: $nro"; return 0; fi
+  if [ "$SKIP_MEM" = 0 ]; then
+    mem_check || die "nro: not enough memory for the native image (--skip-memcheck to try anyway)"
+  fi
+  unmark nro; rm -f "$nro"
+  echo "game files: $PZ_DEPOT/game"
+  in_env 'cd pz41 && ./make-jar.sh' || die "nro: make-jar.sh failed"
+  in_env 'cd pz41 && JAR=$PWD/pz41.jar OUT=$PWD/config-lua NATIVES="$PWD/game/projectzomboid/*.so" python3 ../pz-switch/gen-lua-config.py' \
+    || die "nro: gen-lua-config.py failed"
+  echo "native image (log: pz41/ni-a64.log):"
+  : > "$log"
+  tail -n +1 -F "$log" 2>/dev/null & tailpid=$!
+  if ! in_env 'cd pz41 && ./build-image.sh'; then kill "$tailpid"; die "nro: native image failed (pz41/ni-a64.log)"; fi
+  sleep 1; kill "$tailpid"; wait "$tailpid" 2>/dev/null || true
+  in_env 'cd pz41 && ./build-nro.sh' || die "nro: linking the NRO failed"
+  nro_magic_ok "$nro" || die "nro: build-nro.sh finished, but $nro is not an NRO"
+  mark nro "$fp"
+  echo "NRO: $nro ($(du -h "$nro" | cut -f1))"
+}
+
+ALL_STAGES=(env-check devkitpro deps nro)
 
 # --- command line ----------------------------------------------------------------------------------------------------
 PZROOT=${PZROOT:-$(find_root)} || die "not inside a zomboid-switch checkout (cd into one or set PZROOT)"
@@ -201,7 +312,7 @@ if [ -f "$PZROOT/pz-build.conf" ]; then
   # shellcheck source=/dev/null
   . "$PZROOT/pz-build.conf"
 fi
-FORCE=0 SKIP_MEM=0
+FORCE=0 SKIP_MEM=0 OFFLINE=0
 STAGES=()
 while [ $# -gt 0 ]; do
   case $1 in
@@ -209,6 +320,7 @@ while [ $# -gt 0 ]; do
     --sd-out) PZ_SD_OUT=${2:?--sd-out needs a directory}; shift 2 ;;
     --force) FORCE=1; shift ;;
     --skip-memcheck) SKIP_MEM=1; shift ;;
+    --offline) OFFLINE=1; shift ;;
     -h | --help | help) usage; exit 0 ;;
     run) shift; STAGES=(run); break ;;
     -*) die "unknown option $1 (pz-build help)" ;;
