@@ -5,6 +5,7 @@ set -e
 D=$PZROOT/pz-switch/deps; B=$D/box64; O=$D/natives-out; X=$PZROOT/pz-switch/horizon/jside/x86
 BD=${BOX64_BUILD:-build-musl-dr}   # build-musl = interpreter only
 CC="$D/musl-aarch64/bin/musl-gcc"
+$PZROOT/pz-switch/horizon/box64/link-headers.sh
 make -C $B/$BD -j24 >/dev/null
 FL="-O2 -fPIE -D_GNU_SOURCE -DBUILD_DYNAMIC -DANDROID -idirafter $PZROOT/pz-switch/horizon/box64/inc -include $PZROOT/pz-switch/horizon/box64/musl_compat.h \
   -I$B/src/include -I$B/src -I$B/src/emu -I$B/$BD -I$GRAALVM/include -I$GRAALVM/include/linux"

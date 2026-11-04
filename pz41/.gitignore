@@ -1,4 +1,4 @@
-game/
+/game
 tools/DepotDownloader
 tools/*.jqh
 tools/LICENSE

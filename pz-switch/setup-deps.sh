@@ -11,7 +11,8 @@ get() { [ -f "$(basename $1)" ] || curl -fLO "$1"; }
 get https://musl.libc.org/releases/musl-1.2.5.tar.gz
 if [ ! -x $MUSLGCC ]; then
   rm -rf musl-1.2.5 && tar xf musl-1.2.5.tar.gz
-  (cd musl-1.2.5 && ./configure --target=aarch64 CROSS_COMPILE=aarch64-linux-gnu- --prefix=$D/musl-aarch64 --disable-shared \
+  # -fPIC explicitly: box64's libbox64.so link pulls this libc.a in, and not every cross gcc defaults to PIE
+  (cd musl-1.2.5 && CFLAGS="-O2 -fPIC" ./configure --target=aarch64 CROSS_COMPILE=aarch64-linux-gnu- --prefix=$D/musl-aarch64 --disable-shared \
      && make -j$(nproc) && make install)
   aarch64-linux-gnu-ar rc musl-aarch64/lib/libatomic_asneeded.a   # GCC 16's specs ask for it; musl needs nothing from it
 fi
@@ -49,6 +50,7 @@ if [ ! -d box64 ]; then
   git clone https://github.com/liamelui/zomdroid-box64.git box64
   (cd box64 && git checkout 4a725d54 && git apply $H/box64/box64-musl.patch)
 fi
+$H/box64/link-headers.sh
 if [ ! -f box64/build-musl-dr/Makefile ]; then
   mkdir -p box64/build-musl-dr && (cd box64/build-musl-dr && cmake .. -DARM64=ON -DARM_DYNAREC=ON -DANDROID=ON -DNOGIT=ON \
     -DBAD_SIGNAL=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64 \

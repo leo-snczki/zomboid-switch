@@ -9,6 +9,13 @@ set -e
 cd $PZROOT/pz41
 G=game/projectzomboid
 B42=${B42JAR:-$HOME/.steam/steam/steamapps/common/ProjectZomboid/projectzomboid/projectzomboid.jar}
+if [ -f "$B42" ]; then
+  echo "build 42 classes: $B42"
+else   # no build 42 install: the same LWJGL and sqlite-jdbc classes from Maven Central
+  B42=$PZROOT/pz41/build-a64/b42-substitute.jar && mkdir -p build-a64
+  ./b42-substitute.sh $B42 $G/lwjgl_util.jar
+  echo "build 42 classes: none found, using LWJGL 3.4.1 + sqlite-jdbc 3.48.0.0 from Maven Central"
+fi
 rm -rf jar && mkdir jar
 for j in commons-compress-1.18 istack-commons-runtime jassimp javacord-2.0.17-shaded javax.activation-api jaxb-api jaxb-runtime \
          trove-3.0.3 uncommons-maths-1.2.3 lwjgl_util; do unzip -qo $G/$j.jar -d jar; done

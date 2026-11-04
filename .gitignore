@@ -48,3 +48,7 @@ pz41/xfer.sh
 *.torrent
 *.magnet.txt
 tools-local/
+
+# NixOS build (nix/): stage state and local settings
+.pz-build/
+pz-build.conf
