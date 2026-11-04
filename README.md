@@ -134,8 +134,11 @@ and copy `out/pz41` onto the card. Start the NRO in full-RAM mode (hold R while 
 into the world takes 3-4 minutes. Controller and touch screen both work.
 
 A USB mouse and keyboard work too, in the dock or through a USB-C adapter. The game gets them as on PC: the pointer,
-five mouse buttons, the wheel, keys with Shift/Ctrl/Alt and key repeat. As on PC, the game decides whether a player
-uses the controller or the mouse and keyboard. Typed text follows the US layout. For
+five mouse buttons, the wheel, keys with Shift/Ctrl/Alt and key repeat. The game's own pointer is always shown
+(`lockCursorToWindow` is turned on at start), since the Switch has no system pointer. Using the mouse, with a click or a
+move, hands player 1 from the controller to mouse and keyboard, as unplugging the controller would on PC: WASD,
+pointer and keyboard prompts. Pressing a controller button brings the controller back, and the game offers to take
+over player 1. Typed text follows the US layout. For
 your own layout (for example Portuguese), open the system keyboard with Minus + Plus: it takes the USB keyboard in the
 layout set in the console's settings.
 
